@@ -31,10 +31,12 @@ export function createDefaultTeam(overrides = {}) {
         description: '',
         members: [], // [{ userId, role, email, joinedAt }]
         categories: [...DEFAULT_CATEGORIES],
+        workflows: [], // [{ id, name, description, steps: [{name, color}] }]
         createdAt: new Date().toISOString(),
         ...overrides,
     };
 }
+
 
 export function createDefaultActivity(overrides = {}) {
     return {
@@ -51,6 +53,8 @@ export function createDefaultActivity(overrides = {}) {
         recurring: false,
         recurrenceRule: null,
         recurrenceParentId: null,
+        workflowId: null,        // id of the team workflow applied to this activity
+        workflowStepIndex: 0,    // current step index within the workflow
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         ...overrides,

@@ -1,6 +1,8 @@
-import { getTeamById, updateTeam, getTeamsForUser, createTeam, addMemberToTeam,
+import {
+    getTeamById, updateTeam, getTeamsForUser, createTeam, addMemberToTeam,
     removeMemberFromTeam, updateMemberRole, getUserById, getUsers, createInvite,
-    getInvitesForUser, acceptInvite, declineInvite, getCurrentTeamId, setCurrentTeamId } from '../data/store.js';
+    getInvitesForUser, acceptInvite, declineInvite, getCurrentTeamId, setCurrentTeamId
+} from '../data/store.js';
 import { getCurrentUser, isTeamAdmin } from '../auth/auth.js';
 import { escapeHtml } from '../utils/sanitize.js';
 import { generateId } from '../utils/id.js';
@@ -227,7 +229,8 @@ export function renderTeamSelector(headerEl, onTeamChange) {
         teams.forEach(t => {
             const opt = document.createElement('option');
             opt.value = t.id;
-            opt.textContent = t.name;
+            const hasWorkflows = (t.workflows || []).length > 0;
+            opt.textContent = hasWorkflows ? `⚡ ${t.name}` : t.name;
             opt.selected = t.id === currentTeamId;
             selector.appendChild(opt);
         });

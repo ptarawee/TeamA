@@ -1,5 +1,8 @@
 import { STATUSES, STATUS_LABELS } from '../data/schema.js';
-import { addActivity, updateActivity, getTeamById, getCurrentTeamId, getUserById } from '../data/store.js';
+import {
+    addActivity, updateActivity, getTeamById, getCurrentTeamId,
+    getUserById, getWorkflows
+} from '../data/store.js';
 import { getCurrentUser } from '../auth/auth.js';
 import { escapeHtml } from '../utils/sanitize.js';
 import { showToast } from './toast.js';
@@ -15,6 +18,7 @@ export function openActivityModal(existingActivity = null, options = {}) {
     const team = getTeamById(teamId);
     const members = team?.members || [];
     const categories = team?.categories || [];
+    const workflows = getWorkflows(teamId);
     const currentUser = getCurrentUser();
 
     const overlay = document.createElement('div');
@@ -22,6 +26,11 @@ export function openActivityModal(existingActivity = null, options = {}) {
 
     const modal = document.createElement('div');
     modal.className = 'modal-content';
+
+    // Build workflow options HTML
+    const workflowOptionsHtml = workflows.map(wf =>
+        `<option value="${escapeHtml(wf.id)}" ${act.workflowId === wf.id ? 'selected' : ''}>${escapeHtml(wf.name)}</option>`
+    ).join('');
 
     modal.innerHTML = `
         <div class="modal-header">
@@ -53,9 +62,9 @@ export function openActivityModal(existingActivity = null, options = {}) {
                     <select id="act-assignee" class="form-input">
                         <option value="">No assignee</option>
                         ${members.map(m => {
-                            const u = getUserById(m.userId);
-                            return u ? `<option value="${m.userId}" ${act.assigneeId === m.userId ? 'selected' : ''}>${escapeHtml(u.name)}</option>` : '';
-                        }).join('')}
+        const u = getUserById(m.userId);
+        return u ? `<option value="${m.userId}" ${act.assigneeId === m.userId ? 'selected' : ''}>${escapeHtml(u.name)}</option>` : '';
+    }).join('')}
                     </select>
                 </div>
                 <div class="form-group">
@@ -66,12 +75,27 @@ export function openActivityModal(existingActivity = null, options = {}) {
                     </select>
                 </div>
             </div>
-            <div class="form-group">
+
+            <!-- Workflow selector -->
+            ${workflows.length > 0 ? `
+            <div class="form-group workflow-selector-group">
+                <label>Workflow <span class="workflow-selector-hint">(optional — replaces default status)</span></label>
+                <select id="act-workflow" class="form-input">
+                    <option value="">None (use standard status)</option>
+                    ${workflowOptionsHtml}
+                </select>
+            </div>
+            <div id="workflow-step-preview" class="workflow-step-preview"></div>
+            ` : ''}
+
+            <!-- Standard status (hidden when a workflow is selected) -->
+            <div class="form-group" id="status-group">
                 <label>Status</label>
                 <select id="act-status" class="form-input">
                     ${STATUSES.map(s => `<option value="${s}" ${act.status === s ? 'selected' : ''}>${STATUS_LABELS[s]}</option>`).join('')}
                 </select>
             </div>
+
             <div class="form-group">
                 <label class="recurring-toggle-label">
                     <input type="checkbox" id="act-recurring" ${act.recurring ? 'checked' : ''}>
@@ -114,12 +138,52 @@ export function openActivityModal(existingActivity = null, options = {}) {
     modal.querySelector('.modal-close-btn').onclick = close;
     modal.querySelector('.modal-cancel-btn').onclick = close;
 
-    // Toggle recurrence options visibility
+    // Toggle recurrence options
     const recurringCheckbox = modal.querySelector('#act-recurring');
     const recurrenceOptions = modal.querySelector('#recurrence-options');
     recurringCheckbox.onchange = () => {
         recurrenceOptions.style.display = recurringCheckbox.checked ? 'block' : 'none';
     };
+
+    // Workflow ↔ status toggle
+    const workflowSelect = modal.querySelector('#act-workflow');
+    const statusGroup = modal.querySelector('#status-group');
+    const stepPreview = modal.querySelector('#workflow-step-preview');
+
+    function updateWorkflowUI() {
+        if (!workflowSelect) return;
+        const selectedWfId = workflowSelect.value;
+        if (selectedWfId) {
+            statusGroup.style.display = 'none';
+            // Render step pills
+            const wf = workflows.find(w => w.id === selectedWfId);
+            if (wf && stepPreview) {
+                const currentStep = (isEdit && act.workflowId === selectedWfId)
+                    ? (act.workflowStepIndex || 0) : 0;
+                stepPreview.innerHTML = `
+                    <div class="wf-preview-label">Current stage:</div>
+                    <div class="wf-preview-steps">
+                        ${(wf.steps || []).map((s, i) => `
+                            <span class="wf-preview-chip ${i === currentStep ? 'active' : ''}"
+                                style="${i === currentStep
+                        ? `background:${s.color}22;color:${s.color};border:1px solid ${s.color}66`
+                        : ''}">
+                                ${escapeHtml(s.name)}
+                            </span>
+                        `).join('<span class="wf-arrow-sm">›</span>')}
+                    </div>
+                `;
+            }
+        } else {
+            statusGroup.style.display = '';
+            if (stepPreview) stepPreview.innerHTML = '';
+        }
+    }
+
+    if (workflowSelect) {
+        workflowSelect.onchange = updateWorkflowUI;
+        updateWorkflowUI(); // initial state
+    }
 
     modal.querySelector('.modal-save-btn').onclick = () => {
         const title = modal.querySelector('#act-title').value.trim();
@@ -130,6 +194,14 @@ export function openActivityModal(existingActivity = null, options = {}) {
         }
 
         const isRecurring = modal.querySelector('#act-recurring').checked;
+        const selectedWfId = workflowSelect ? workflowSelect.value : '';
+
+        // Determine workflowStepIndex: keep existing if same workflow, else start at 0
+        let workflowStepIndex = 0;
+        if (isEdit && act.workflowId === selectedWfId && selectedWfId) {
+            workflowStepIndex = act.workflowStepIndex || 0;
+        }
+
         const data = {
             title,
             description: modal.querySelector('#act-desc').value.trim(),
@@ -137,7 +209,7 @@ export function openActivityModal(existingActivity = null, options = {}) {
             dueTime: modal.querySelector('#act-time').value,
             assigneeId: modal.querySelector('#act-assignee').value,
             categoryId: modal.querySelector('#act-category').value,
-            status: modal.querySelector('#act-status').value,
+            status: selectedWfId ? 'in_progress' : modal.querySelector('#act-status').value,
             teamId,
             recurring: isRecurring,
             recurrenceRule: isRecurring ? {
@@ -145,18 +217,18 @@ export function openActivityModal(existingActivity = null, options = {}) {
                 interval: parseInt(modal.querySelector('#act-rec-interval').value, 10) || 1,
                 endDate: modal.querySelector('#act-rec-end').value || null,
             } : null,
+            workflowId: selectedWfId || null,
+            workflowStepIndex,
         };
 
         if (isEdit) {
             updateActivity(act.id, data);
-            // Notify if assignee changed
             if (data.assigneeId && data.assigneeId !== act.assigneeId && currentUser) {
                 notifyAssignment(title, data.assigneeId, currentUser.id);
             }
         } else {
             data.createdBy = currentUser?.id || '';
             addActivity(data);
-            // Notify assignee on new activity
             if (data.assigneeId && currentUser) {
                 notifyAssignment(title, data.assigneeId, currentUser.id);
             }

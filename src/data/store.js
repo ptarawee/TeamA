@@ -29,7 +29,9 @@ export function getUserByEmail(email) { return getUsers().find(u => u.email === 
 
 // ========== TEAMS ==========
 export function getTeams() { return read(KEYS.teams) || []; }
+export function setTeams(teams) { write(KEYS.teams, teams); }
 export function getTeamById(id) { return getTeams().find(t => t.id === id) || null; }
+
 export function getTeamsForUser(userId) {
     return getTeams().filter(t => t.members.some(m => m.userId === userId));
 }
@@ -101,6 +103,43 @@ export function getCategories(teamId) {
     return team?.categories || [];
 }
 
+// Team workflows
+export function getWorkflows(teamId) {
+    const team = getTeamById(teamId);
+    return team?.workflows || [];
+}
+
+export function addWorkflow(teamId, workflow) {
+    const teams = getTeams();
+    const team = teams.find(t => t.id === teamId);
+    if (!team) return null;
+    if (!team.workflows) team.workflows = [];
+    const wf = { ...workflow, id: workflow.id || generateId('wf') };
+    team.workflows.push(wf);
+    write(KEYS.teams, teams);
+    return wf;
+}
+
+export function updateWorkflow(teamId, workflowId, updates) {
+    const teams = getTeams();
+    const team = teams.find(t => t.id === teamId);
+    if (!team || !team.workflows) return null;
+    const idx = team.workflows.findIndex(w => w.id === workflowId);
+    if (idx === -1) return null;
+    team.workflows[idx] = { ...team.workflows[idx], ...updates, id: workflowId };
+    write(KEYS.teams, teams);
+    return team.workflows[idx];
+}
+
+export function deleteWorkflow(teamId, workflowId) {
+    const teams = getTeams();
+    const team = teams.find(t => t.id === teamId);
+    if (!team || !team.workflows) return;
+    team.workflows = team.workflows.filter(w => w.id !== workflowId);
+    write(KEYS.teams, teams);
+}
+
+
 // ========== INVITES ==========
 export function getInvites() { return read(KEYS.invites) || []; }
 
@@ -141,6 +180,8 @@ export function declineInvite(inviteId) {
 
 // ========== ACTIVITIES ==========
 export function getActivities() { return read(KEYS.activities) || []; }
+export function setActivities(activities) { write(KEYS.activities, activities); }
+
 export function getActivitiesByTeam(teamId) { return getActivities().filter(a => a.teamId === teamId); }
 export function getActivitiesByDate(teamId, dateStr) { return getActivities().filter(a => a.teamId === teamId && a.dueDate === dateStr); }
 export function getActivitiesByAssignee(teamId, userId) { return getActivities().filter(a => a.teamId === teamId && a.assigneeId === userId); }
