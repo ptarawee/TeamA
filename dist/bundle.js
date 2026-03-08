@@ -28,6 +28,8 @@ function createDefaultTeam(overrides = {}) {
     members: [],
     // [{ userId, role, email, joinedAt }]
     categories: [...DEFAULT_CATEGORIES],
+    workflows: [],
+    // [{ id, name, description, steps: [{name, color}] }]
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     ...overrides
   };
@@ -47,6 +49,10 @@ function createDefaultActivity(overrides = {}) {
     recurring: false,
     recurrenceRule: null,
     recurrenceParentId: null,
+    workflowId: null,
+    // id of the team workflow applied to this activity
+    workflowStepIndex: 0,
+    // current step index within the workflow
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     ...overrides
@@ -107,6 +113,9 @@ function getUserById(id) {
 function getTeams() {
   return read(KEYS.teams) || [];
 }
+function setTeams(teams) {
+  write(KEYS.teams, teams);
+}
 function getTeamById(id) {
   return getTeams().find((t) => t.id === id) || null;
 }
@@ -163,6 +172,37 @@ function getCategories(teamId) {
   const team = getTeamById(teamId);
   return team?.categories || [];
 }
+function getWorkflows(teamId) {
+  const team = getTeamById(teamId);
+  return team?.workflows || [];
+}
+function addWorkflow(teamId, workflow) {
+  const teams = getTeams();
+  const team = teams.find((t) => t.id === teamId);
+  if (!team) return null;
+  if (!team.workflows) team.workflows = [];
+  const wf = { ...workflow, id: workflow.id || generateId("wf") };
+  team.workflows.push(wf);
+  write(KEYS.teams, teams);
+  return wf;
+}
+function updateWorkflow(teamId, workflowId, updates) {
+  const teams = getTeams();
+  const team = teams.find((t) => t.id === teamId);
+  if (!team || !team.workflows) return null;
+  const idx = team.workflows.findIndex((w) => w.id === workflowId);
+  if (idx === -1) return null;
+  team.workflows[idx] = { ...team.workflows[idx], ...updates, id: workflowId };
+  write(KEYS.teams, teams);
+  return team.workflows[idx];
+}
+function deleteWorkflow(teamId, workflowId) {
+  const teams = getTeams();
+  const team = teams.find((t) => t.id === teamId);
+  if (!team || !team.workflows) return;
+  team.workflows = team.workflows.filter((w) => w.id !== workflowId);
+  write(KEYS.teams, teams);
+}
 function getInvites() {
   return read(KEYS.invites) || [];
 }
@@ -203,6 +243,9 @@ function declineInvite(inviteId) {
 }
 function getActivities() {
   return read(KEYS.activities) || [];
+}
+function setActivities(activities) {
+  write(KEYS.activities, activities);
 }
 function getActivitiesByTeam(teamId) {
   return getActivities().filter((a) => a.teamId === teamId);
@@ -430,22 +473,47 @@ function relativeTime(timestamp) {
 }
 
 // src/data/seedData.js
-var USERS_KEY = "pyrio_users";
-var TEAM_MEMBERS = [
+var SEED_MARKETING_KEY = "pyrio_seed_marketing_v2";
+var ALL_USERS = [
+  // ── Product Team ──────────────────────────────────────────────────────────
   { id: "user_1", name: "Alice Chen", email: "alice@pyrio.io", color: "#4F46E5", avatarInitials: "AC" },
   { id: "user_2", name: "Bob Park", email: "bob@pyrio.io", color: "#059669", avatarInitials: "BP" },
   { id: "user_3", name: "Carol Diaz", email: "carol@pyrio.io", color: "#D97706", avatarInitials: "CD" },
-  { id: "user_4", name: "Dan Kim", email: "dan@pyrio.io", color: "#DC2626", avatarInitials: "DK" }
+  { id: "user_4", name: "Dan Kim", email: "dan@pyrio.io", color: "#DC2626", avatarInitials: "DK" },
+  // ── Marketing only ────────────────────────────────────────────────────────
+  { id: "user_5", name: "Emma Wilson", email: "emma@pyrio.io", color: "#BE185D", avatarInitials: "EW" },
+  { id: "user_6", name: "Liam Torres", email: "liam@pyrio.io", color: "#0891B2", avatarInitials: "LT" },
+  { id: "user_7", name: "Sophia Nguyen", email: "sophia@pyrio.io", color: "#7C3AED", avatarInitials: "SN" }
 ];
 function seedIfNeeded() {
-  if (!localStorage.getItem(USERS_KEY)) {
-    setUsers(TEAM_MEMBERS);
-  }
+  ensureAllUsers();
   if (getTeams().length === 0) {
-    seedTeamAndData();
+    seedProductTeam();
+  }
+  if (!localStorage.getItem(SEED_MARKETING_KEY)) {
+    purgeAndReseedMarketing();
+    localStorage.setItem(SEED_MARKETING_KEY, "1");
   }
 }
-function seedTeamAndData() {
+function ensureAllUsers() {
+  const existing = getUsers();
+  const existingIds = new Set(existing.map((u) => u.id));
+  const merged = [...existing];
+  ALL_USERS.forEach((u) => {
+    if (!existingIds.has(u.id)) merged.push(u);
+  });
+  setUsers(merged);
+}
+function purgeAndReseedMarketing() {
+  const teams = getTeams();
+  const oldMarketing = teams.find((t) => t.name === "Marketing");
+  if (oldMarketing) {
+    setTeams(teams.filter((t) => t.id !== oldMarketing.id));
+    setActivities(getActivities().filter((a) => a.teamId !== oldMarketing.id));
+  }
+  seedMarketingTeam();
+}
+function seedProductTeam() {
   const team = createTeam({
     name: "Product Team",
     description: "Main product development team",
@@ -463,12 +531,12 @@ function seedTeamAndData() {
     dt.setDate(dt.getDate() + offset);
     return formatDate(dt);
   };
-  const makeTime = (dateStr, h, m) => `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00.000Z`;
+  const mkT = (dateStr, h, m) => `${dateStr}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00.000Z`;
   const acts = [
     { title: "Weekly team standup", dueDate: d(0), dueTime: "09:00", assigneeId: "user_1", categoryId: "cat_meeting", status: "done", teamId: team.id, createdBy: "user_1" },
     { title: "Design API specification", dueDate: d(0), dueTime: "10:00", assigneeId: "user_2", categoryId: "cat_development", status: "in_progress", teamId: team.id, createdBy: "user_1" },
     { title: "Fix login page layout", dueDate: d(1), dueTime: "14:00", assigneeId: "user_3", categoryId: "cat_development", status: "todo", teamId: team.id, createdBy: "user_1" },
-    { title: "Client meeting - Project Alpha", dueDate: d(0), dueTime: "13:00", assigneeId: "user_1", categoryId: "cat_meeting", status: "done", teamId: team.id, createdBy: "user_1" },
+    { title: "Client meeting \u2014 Project Alpha", dueDate: d(0), dueTime: "13:00", assigneeId: "user_1", categoryId: "cat_meeting", status: "done", teamId: team.id, createdBy: "user_1" },
     { title: "Database migration script", dueDate: d(1), dueTime: "11:00", assigneeId: "user_4", categoryId: "cat_development", status: "in_progress", teamId: team.id, createdBy: "user_1" },
     { title: "Update component docs", dueDate: d(2), dueTime: "", assigneeId: "user_3", categoryId: "cat_design", status: "todo", teamId: team.id, createdBy: "user_1" },
     { title: "Code review: payment module", dueDate: d(0), dueTime: "15:00", assigneeId: "user_2", categoryId: "cat_development", status: "done", teamId: team.id, createdBy: "user_4" },
@@ -478,17 +546,116 @@ function seedTeamAndData() {
   ];
   const created = acts.map((a) => addActivity(a));
   [
-    { activityId: created[0].id, userId: "user_1", teamId: team.id, startTime: makeTime(d(0), 9, 0), endTime: makeTime(d(0), 9, 30), duration: 30 },
-    { activityId: created[1].id, userId: "user_2", teamId: team.id, startTime: makeTime(d(0), 10, 0), endTime: makeTime(d(0), 12, 30), duration: 150 },
-    { activityId: created[3].id, userId: "user_1", teamId: team.id, startTime: makeTime(d(0), 13, 0), endTime: makeTime(d(0), 14, 30), duration: 90 },
-    { activityId: created[6].id, userId: "user_2", teamId: team.id, startTime: makeTime(d(0), 15, 0), endTime: makeTime(d(0), 16, 0), duration: 60 },
-    { activityId: created[8].id, userId: "user_4", teamId: team.id, startTime: makeTime(d(0), 16, 0), endTime: makeTime(d(0), 17, 30), duration: 90 },
-    { activityId: created[1].id, userId: "user_2", teamId: team.id, startTime: makeTime(d(-1), 9, 0), endTime: makeTime(d(-1), 12, 0), duration: 180 },
-    { activityId: created[4].id, userId: "user_4", teamId: team.id, startTime: makeTime(d(-1), 10, 0), endTime: makeTime(d(-1), 14, 0), duration: 240 },
-    { activityId: created[5].id, userId: "user_3", teamId: team.id, startTime: makeTime(d(-1), 13, 0), endTime: makeTime(d(-1), 15, 0), duration: 120 },
-    { activityId: created[0].id, userId: "user_1", teamId: team.id, startTime: makeTime(d(-2), 9, 0), endTime: makeTime(d(-2), 9, 45), duration: 45 },
-    { activityId: created[2].id, userId: "user_3", teamId: team.id, startTime: makeTime(d(-2), 10, 0), endTime: makeTime(d(-2), 14, 0), duration: 240 }
+    { activityId: created[0].id, userId: "user_1", teamId: team.id, startTime: mkT(d(0), 9, 0), endTime: mkT(d(0), 9, 30), duration: 30 },
+    { activityId: created[1].id, userId: "user_2", teamId: team.id, startTime: mkT(d(0), 10, 0), endTime: mkT(d(0), 12, 30), duration: 150 },
+    { activityId: created[3].id, userId: "user_1", teamId: team.id, startTime: mkT(d(0), 13, 0), endTime: mkT(d(0), 14, 30), duration: 90 },
+    { activityId: created[6].id, userId: "user_2", teamId: team.id, startTime: mkT(d(0), 15, 0), endTime: mkT(d(0), 16, 0), duration: 60 },
+    { activityId: created[8].id, userId: "user_4", teamId: team.id, startTime: mkT(d(0), 16, 0), endTime: mkT(d(0), 17, 30), duration: 90 },
+    { activityId: created[1].id, userId: "user_2", teamId: team.id, startTime: mkT(d(-1), 9, 0), endTime: mkT(d(-1), 12, 0), duration: 180 },
+    { activityId: created[4].id, userId: "user_4", teamId: team.id, startTime: mkT(d(-1), 10, 0), endTime: mkT(d(-1), 14, 0), duration: 240 },
+    { activityId: created[5].id, userId: "user_3", teamId: team.id, startTime: mkT(d(-1), 13, 0), endTime: mkT(d(-1), 15, 0), duration: 120 },
+    { activityId: created[0].id, userId: "user_1", teamId: team.id, startTime: mkT(d(-2), 9, 0), endTime: mkT(d(-2), 9, 45), duration: 45 },
+    { activityId: created[2].id, userId: "user_3", teamId: team.id, startTime: mkT(d(-2), 10, 0), endTime: mkT(d(-2), 14, 0), duration: 240 }
   ].forEach((te) => addTimeEntry(te));
+}
+function seedMarketingTeam() {
+  const today = /* @__PURE__ */ new Date();
+  const d = (offset) => {
+    const dt = new Date(today);
+    dt.setDate(dt.getDate() + offset);
+    return formatDate(dt);
+  };
+  const marketingCategories = [
+    { id: "mcat_content", name: "Content", color: "#EC4899" },
+    { id: "mcat_social", name: "Social Media", color: "#8B5CF6" },
+    { id: "mcat_campaign", name: "Campaign", color: "#F59E0B" },
+    { id: "mcat_seo", name: "SEO", color: "#10B981" },
+    { id: "mcat_design", name: "Design", color: "#3B82F6" },
+    { id: "mcat_analytics", name: "Analytics", color: "#6366F1" },
+    { id: "mcat_email", name: "Email", color: "#0D9488" },
+    { id: "mcat_event", name: "Events", color: "#EF4444" }
+  ];
+  const contentPipelineWf = {
+    id: "wf_content_pipeline",
+    name: "Content Pipeline",
+    description: "From idea to published article or post",
+    steps: [
+      { name: "Idea", color: "#6B7280" },
+      { name: "Drafting", color: "#3B82F6" },
+      { name: "Review", color: "#F59E0B" },
+      { name: "Design", color: "#8B5CF6" },
+      { name: "Approval", color: "#EC4899" },
+      { name: "Published", color: "#10B981" }
+    ]
+  };
+  const campaignLaunchWf = {
+    id: "wf_campaign_launch",
+    name: "Campaign Launch",
+    description: "End-to-end campaign planning and go-live",
+    steps: [
+      { name: "Brief", color: "#6B7280" },
+      { name: "Strategy", color: "#6366F1" },
+      { name: "Creative", color: "#EC4899" },
+      { name: "QA", color: "#F59E0B" },
+      { name: "Live", color: "#10B981" }
+    ]
+  };
+  const socialMediaWf = {
+    id: "wf_social_media",
+    name: "Social Media Post",
+    description: "Quick pipeline for social content",
+    steps: [
+      { name: "Draft", color: "#6B7280" },
+      { name: "Visual", color: "#8B5CF6" },
+      { name: "Approved", color: "#F59E0B" },
+      { name: "Scheduled", color: "#3B82F6" },
+      { name: "Posted", color: "#10B981" }
+    ]
+  };
+  const team = createTeam({
+    name: "Marketing",
+    description: "Brand, content, campaigns & growth",
+    members: [
+      // Alice Chen is admin in both teams
+      { userId: "user_1", role: "admin", email: "alice@pyrio.io", joinedAt: (/* @__PURE__ */ new Date()).toISOString() },
+      // Marketing-only members (NOT in Product Team)
+      { userId: "user_5", role: "member", email: "emma@pyrio.io", joinedAt: (/* @__PURE__ */ new Date()).toISOString() },
+      { userId: "user_6", role: "member", email: "liam@pyrio.io", joinedAt: (/* @__PURE__ */ new Date()).toISOString() },
+      { userId: "user_7", role: "member", email: "sophia@pyrio.io", joinedAt: (/* @__PURE__ */ new Date()).toISOString() }
+    ],
+    categories: marketingCategories,
+    workflows: [contentPipelineWf, campaignLaunchWf, socialMediaWf]
+  });
+  [
+    // Content Pipeline — various stages
+    { title: "Q1 Company Blog Post", dueDate: d(3), dueTime: "12:00", assigneeId: "user_6", categoryId: "mcat_content", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_content_pipeline", workflowStepIndex: 1 },
+    // Drafting
+    { title: "Case Study: Client Success", dueDate: d(7), dueTime: "", assigneeId: "user_5", categoryId: "mcat_content", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_content_pipeline", workflowStepIndex: 2 },
+    // Review
+    { title: "Product Launch Article", dueDate: d(5), dueTime: "10:00", assigneeId: "user_1", categoryId: "mcat_content", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_content_pipeline", workflowStepIndex: 4 },
+    // Approval
+    { title: "SEO Guide: Keyword Strategy", dueDate: d(1), dueTime: "", assigneeId: "user_7", categoryId: "mcat_seo", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_content_pipeline", workflowStepIndex: 0 },
+    // Idea
+    // Campaign Launch — various stages
+    { title: "Spring Sale Campaign", dueDate: d(10), dueTime: "09:00", assigneeId: "user_1", categoryId: "mcat_campaign", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_campaign_launch", workflowStepIndex: 2 },
+    // Creative
+    { title: "Partner Co-Marketing Campaign", dueDate: d(14), dueTime: "", assigneeId: "user_5", categoryId: "mcat_campaign", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_campaign_launch", workflowStepIndex: 1 },
+    // Strategy
+    { title: "Influencer Outreach Drive", dueDate: d(6), dueTime: "14:00", assigneeId: "user_6", categoryId: "mcat_campaign", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_campaign_launch", workflowStepIndex: 0 },
+    // Brief
+    // Social Media Post — various stages
+    { title: "LinkedIn: Product Feature", dueDate: d(0), dueTime: "14:00", assigneeId: "user_7", categoryId: "mcat_social", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_social_media", workflowStepIndex: 2 },
+    // Approved
+    { title: "Instagram: Behind the Scenes", dueDate: d(2), dueTime: "11:00", assigneeId: "user_6", categoryId: "mcat_social", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_social_media", workflowStepIndex: 1 },
+    // Visual
+    { title: "Twitter Thread: Trends", dueDate: d(1), dueTime: "09:00", assigneeId: "user_5", categoryId: "mcat_social", status: "in_progress", teamId: team.id, createdBy: "user_1", workflowId: "wf_social_media", workflowStepIndex: 3 },
+    // Scheduled
+    // Non-workflow activities
+    { title: "Monthly Marketing Report", dueDate: d(0), dueTime: "17:00", assigneeId: "user_1", categoryId: "mcat_analytics", status: "in_progress", teamId: team.id, createdBy: "user_1" },
+    { title: "Website Redesign Review", dueDate: d(2), dueTime: "15:00", assigneeId: "user_5", categoryId: "mcat_design", status: "todo", teamId: team.id, createdBy: "user_1" },
+    { title: "Email Newsletter \u2014 March", dueDate: d(4), dueTime: "", assigneeId: "user_6", categoryId: "mcat_email", status: "todo", teamId: team.id, createdBy: "user_1" },
+    { title: "Brand Event Planning Q2", dueDate: d(8), dueTime: "10:00", assigneeId: "user_7", categoryId: "mcat_event", status: "todo", teamId: team.id, createdBy: "user_1" }
+  ].forEach((a) => addActivity(a));
 }
 
 // src/auth/auth.js
@@ -516,7 +683,305 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
+// src/services/ssoService.js
+var SSO_CONFIG_KEY = "pyrio_sso_config";
+var SSO_SESSION_KEY = "pyrio_sso_session";
+function defaultConfig() {
+  return {
+    enabled: false,
+    platformName: "HR Platform",
+    ssoUrl: "https://hr.company.com/sso/auth",
+    clientId: "pyrio-app-001",
+    allowedDomain: "",
+    // e.g. "company.com" — leave blank to allow any
+    buttonColor: "#1D4ED8",
+    // colour for the SSO button
+    buttonLabel: "Sign in with HR Platform",
+    description: "Employees and contractors can sign in using their HR credentials.",
+    calendarOnly: true
+    // SSO users see Calendar only
+  };
+}
+function getSSOConfig() {
+  try {
+    const raw = localStorage.getItem(SSO_CONFIG_KEY);
+    return raw ? { ...defaultConfig(), ...JSON.parse(raw) } : defaultConfig();
+  } catch {
+    return defaultConfig();
+  }
+}
+function setSSOConfig(config) {
+  localStorage.setItem(SSO_CONFIG_KEY, JSON.stringify(config));
+}
+function isSSOEnabled() {
+  return getSSOConfig().enabled === true;
+}
+function getSSOSession() {
+  try {
+    const raw = localStorage.getItem(SSO_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function setSSOSession(data) {
+  localStorage.setItem(SSO_SESSION_KEY, JSON.stringify(data));
+}
+function clearSSOSession() {
+  localStorage.removeItem(SSO_SESSION_KEY);
+}
+function isSSOSession() {
+  return getSSOSession() !== null;
+}
+function colorFromEmail(email) {
+  const COLORS = [
+    "#4F46E5",
+    "#059669",
+    "#D97706",
+    "#DC2626",
+    "#BE185D",
+    "#0891B2",
+    "#7C3AED",
+    "#0D9488",
+    "#EA580C",
+    "#65A30D"
+  ];
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) hash = email.charCodeAt(i) + ((hash << 5) - hash);
+  return COLORS[Math.abs(hash) % COLORS.length];
+}
+function initialsFromName(name) {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.slice(0, 2).toUpperCase();
+}
+function nameFromEmail(email) {
+  const local = email.split("@")[0];
+  return local.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// src/components/toast.js
+var stylesInjected = false;
+function injectStyles() {
+  if (stylesInjected) return;
+  stylesInjected = true;
+  const style = document.createElement("style");
+  style.textContent = `
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column-reverse;
+            gap: 8px;
+            pointer-events: none;
+        }
+
+        .toast {
+            pointer-events: auto;
+            background: #FFFFFF;
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
+            padding: 12px 16px;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 10px;
+            max-width: 380px;
+            min-width: 280px;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.85rem;
+            color: var(--text-main, #111827);
+            transform: translateY(20px);
+            opacity: 0;
+            animation: toast-slide-in 0.3s ease forwards;
+        }
+
+        .toast.toast-exit {
+            animation: toast-fade-out 0.25s ease forwards;
+        }
+
+        @keyframes toast-slide-in {
+            from {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+
+        @keyframes toast-fade-out {
+            from {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateY(8px);
+                opacity: 0;
+            }
+        }
+
+        .toast-icon {
+            flex-shrink: 0;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .toast-icon svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .toast-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .toast-message {
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .toast-undo-btn {
+            background: none;
+            border: none;
+            color: var(--primary, #4F46E5);
+            font-weight: 700;
+            text-decoration: underline;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            padding: 0;
+            margin-left: 2px;
+            flex-shrink: 0;
+        }
+
+        .toast-undo-btn:hover {
+            opacity: 0.8;
+        }
+
+        .toast-close-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted, #6B7280);
+            flex-shrink: 0;
+            border-radius: 4px;
+            transition: background 0.15s;
+        }
+
+        .toast-close-btn:hover {
+            background: var(--bg-body, #F3F4F6);
+        }
+
+        .toast-close-btn svg {
+            width: 16px;
+            height: 16px;
+        }
+    `;
+  document.head.appendChild(style);
+}
+var ICONS = {
+  success: `<svg viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="9" stroke="#10B981" stroke-width="1.5" fill="#ECFDF5"/>
+        <path d="M6.5 10.5L8.5 12.5L13.5 7.5" stroke="#10B981" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>`,
+  error: `<svg viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="9" stroke="#EF4444" stroke-width="1.5" fill="#FEF2F2"/>
+        <path d="M7.5 7.5L12.5 12.5M12.5 7.5L7.5 12.5" stroke="#EF4444" stroke-width="1.8" stroke-linecap="round"/>
+    </svg>`,
+  info: `<svg viewBox="0 0 20 20" fill="none">
+        <circle cx="10" cy="10" r="9" stroke="#3B82F6" stroke-width="1.5" fill="#EFF6FF"/>
+        <path d="M10 9V14" stroke="#3B82F6" stroke-width="1.8" stroke-linecap="round"/>
+        <circle cx="10" cy="6.5" r="1" fill="#3B82F6"/>
+    </svg>`,
+  warning: `<svg viewBox="0 0 20 20" fill="none">
+        <path d="M10 2L18.66 17H1.34L10 2Z" stroke="#F59E0B" stroke-width="1.5" fill="#FFFBEB" stroke-linejoin="round"/>
+        <path d="M10 8V12" stroke="#F59E0B" stroke-width="1.8" stroke-linecap="round"/>
+        <circle cx="10" cy="14.5" r="1" fill="#F59E0B"/>
+    </svg>`
+};
+var CLOSE_ICON = `<svg viewBox="0 0 16 16" fill="none">
+    <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+</svg>`;
+var container = null;
+function getContainer() {
+  if (container && document.body.contains(container)) return container;
+  container = document.createElement("div");
+  container.className = "toast-container";
+  document.body.appendChild(container);
+  return container;
+}
+function dismissToast(toastEl) {
+  if (toastEl.dataset.dismissed === "true") return;
+  toastEl.dataset.dismissed = "true";
+  if (toastEl._autoTimer) {
+    clearTimeout(toastEl._autoTimer);
+    toastEl._autoTimer = null;
+  }
+  toastEl.classList.add("toast-exit");
+  toastEl.addEventListener("animationend", () => {
+    toastEl.remove();
+  }, { once: true });
+}
+function showToast(message, type = "info", options = {}) {
+  injectStyles();
+  const { duration = 3e3, undoCallback = null } = options;
+  const host = getContainer();
+  const toast = document.createElement("div");
+  toast.className = "toast";
+  const iconWrap = document.createElement("span");
+  iconWrap.className = "toast-icon";
+  iconWrap.innerHTML = ICONS[type] || ICONS.info;
+  toast.appendChild(iconWrap);
+  const body = document.createElement("span");
+  body.className = "toast-body toast-message";
+  body.innerHTML = escapeHtml(message);
+  toast.appendChild(body);
+  if (typeof undoCallback === "function") {
+    const undoBtn = document.createElement("button");
+    undoBtn.className = "toast-undo-btn";
+    undoBtn.textContent = "Undo";
+    undoBtn.addEventListener("click", () => {
+      undoCallback();
+      dismissToast(toast);
+    });
+    toast.appendChild(undoBtn);
+  }
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "toast-close-btn";
+  closeBtn.innerHTML = CLOSE_ICON;
+  closeBtn.setAttribute("aria-label", "Close");
+  closeBtn.addEventListener("click", () => dismissToast(toast));
+  toast.appendChild(closeBtn);
+  host.appendChild(toast);
+  if (duration > 0) {
+    toast._autoTimer = setTimeout(() => dismissToast(toast), duration);
+  }
+  return toast;
+}
+
 // src/components/loginScreen.js
+function getUserGlobalRole(userId) {
+  for (const team of getTeams()) {
+    const member = team.members?.find((m) => m.userId === userId);
+    if (member?.role === "admin") return "admin";
+  }
+  return "member";
+}
+function getUserTeamNames(userId) {
+  return getTeams().filter((t) => t.members?.some((m) => m.userId === userId)).map((t) => t.name);
+}
 function renderLoginScreen(container2, onLogin) {
   const users = getUsers();
   container2.innerHTML = "";
@@ -527,20 +992,29 @@ function renderLoginScreen(container2, onLogin) {
   card.innerHTML = `
         <div class="login-header">
             <h1 class="login-title">Pyrio</h1>
-            <p class="login-subtitle">Team Activity & Time Tracking</p>
+            <p class="login-subtitle">Team Activity &amp; Time Tracking</p>
         </div>
         <p class="login-prompt">Select your profile to continue</p>
         <div class="login-users"></div>
     `;
   const usersDiv = card.querySelector(".login-users");
   users.forEach((user) => {
+    const role = getUserGlobalRole(user.id);
+    const teamNames = getUserTeamNames(user.id);
     const btn = document.createElement("button");
     btn.className = "login-user-btn";
+    const teamsHtml = teamNames.length ? teamNames.map((n) => `<span class="login-team-chip">${escapeHtml(n)}</span>`).join("") : "";
     btn.innerHTML = `
             <div class="login-avatar" style="background-color: ${escapeHtml(user.color)}">${escapeHtml(user.avatarInitials)}</div>
             <div class="login-user-info">
-                <span class="login-user-name">${escapeHtml(user.name)}</span>
-                <span class="login-user-role">${escapeHtml(user.email)}</span>
+                <div class="login-user-name-row">
+                    <span class="login-user-name">${escapeHtml(user.name)}</span>
+                    <span class="login-role-badge login-role-badge--${escapeHtml(role)}">${role === "admin" ? "Admin" : "Member"}</span>
+                </div>
+                <div class="login-user-meta">
+                    <span class="login-user-email">${escapeHtml(user.email)}</span>
+                    ${teamsHtml ? `<span class="login-teams-row">${teamsHtml}</span>` : ""}
+                </div>
             </div>
         `;
     btn.onclick = () => {
@@ -549,8 +1023,162 @@ function renderLoginScreen(container2, onLogin) {
     };
     usersDiv.appendChild(btn);
   });
+  if (isSSOEnabled()) {
+    const cfg = getSSOConfig();
+    const ssoDivider = document.createElement("div");
+    ssoDivider.className = "login-sso-divider";
+    ssoDivider.innerHTML = "<span>or</span>";
+    card.appendChild(ssoDivider);
+    const ssoSection = document.createElement("div");
+    ssoSection.className = "login-sso-section";
+    if (cfg.description) {
+      const desc = document.createElement("p");
+      desc.className = "login-sso-desc";
+      desc.textContent = cfg.description;
+      ssoSection.appendChild(desc);
+    }
+    const ssoBtn = document.createElement("button");
+    ssoBtn.className = "login-sso-btn";
+    ssoBtn.style.setProperty("--sso-color", cfg.buttonColor);
+    ssoBtn.innerHTML = `
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <span>${escapeHtml(cfg.buttonLabel)}</span>
+        `;
+    ssoBtn.onclick = () => openSSOModal(cfg, onLogin);
+    ssoSection.appendChild(ssoBtn);
+    const secureBadge = document.createElement("div");
+    secureBadge.className = "login-sso-secure";
+    secureBadge.innerHTML = `
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Secured by ${escapeHtml(cfg.platformName)}
+        `;
+    ssoSection.appendChild(secureBadge);
+    card.appendChild(ssoSection);
+  }
   wrapper.appendChild(card);
   container2.appendChild(wrapper);
+}
+function openSSOModal(cfg, onLogin) {
+  const root = document.getElementById("modal-root");
+  if (!root) return;
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay sso-modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "modal-content sso-modal";
+  modal.innerHTML = `
+        <div class="sso-modal-header" style="--sso-color:${escapeHtml(cfg.buttonColor)}">
+            <div class="sso-modal-logo">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                </svg>
+            </div>
+            <div class="sso-modal-title-wrap">
+                <span class="sso-modal-platform">${escapeHtml(cfg.platformName)}</span>
+                <span class="sso-modal-subtitle">Single Sign-On</span>
+            </div>
+        </div>
+
+        <div class="sso-modal-body" id="sso-modal-body">
+            <div id="sso-step-email">
+                <p class="sso-body-title">Sign in to your organization</p>
+                <p class="sso-body-hint">Enter your work email address to continue</p>
+                <div class="form-group">
+                    <label>Work Email</label>
+                    <input type="email" id="sso-email-input" class="form-input"
+                        placeholder="you@${escapeHtml(cfg.allowedDomain || "company.com")}">
+                </div>
+                <button class="btn btn-primary sso-continue-btn" id="sso-continue-btn"
+                    style="width:100%;background:${escapeHtml(cfg.buttonColor)};border-color:${escapeHtml(cfg.buttonColor)}">
+                    Continue
+                </button>
+            </div>
+
+            <div id="sso-step-auth" style="display:none" class="sso-step-auth">
+                <div class="sso-spinner"></div>
+                <p class="sso-auth-text">Authenticating with ${escapeHtml(cfg.platformName)}&hellip;</p>
+            </div>
+
+            <div id="sso-step-success" style="display:none" class="sso-step-success">
+                <div class="sso-success-icon" style="color:${escapeHtml(cfg.buttonColor)}">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                        <polyline points="22 4 12 14.01 9 11.01"/>
+                    </svg>
+                </div>
+                <p class="sso-auth-text">Signed in successfully!</p>
+                <p class="sso-auth-hint">Redirecting to Calendar&hellip;</p>
+            </div>
+        </div>
+
+        <div class="sso-modal-footer">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+            Secured by ${escapeHtml(cfg.platformName)} &middot; Client ID: ${escapeHtml(cfg.clientId)}
+        </div>
+    `;
+  overlay.appendChild(modal);
+  root.appendChild(overlay);
+  overlay.onclick = (e) => {
+    if (e.target === overlay) root.removeChild(overlay);
+  };
+  setTimeout(() => modal.querySelector("#sso-email-input")?.focus(), 50);
+  modal.querySelector("#sso-continue-btn").onclick = () => {
+    const email = modal.querySelector("#sso-email-input").value.trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+      modal.querySelector("#sso-email-input").classList.add("input-error");
+      return;
+    }
+    if (cfg.allowedDomain) {
+      const domain = email.split("@")[1];
+      if (domain !== cfg.allowedDomain) {
+        modal.querySelector("#sso-email-input").classList.add("input-error");
+        showToast(`Only @${cfg.allowedDomain} addresses are allowed`, "error");
+        return;
+      }
+    }
+    modal.querySelector("#sso-step-email").style.display = "none";
+    modal.querySelector("#sso-step-auth").style.display = "";
+    const delay = 800 + Math.random() * 600;
+    setTimeout(() => {
+      const allUsers = getUsers();
+      let matchedUser = allUsers.find((u) => u.email.toLowerCase() === email);
+      if (!matchedUser) {
+        const name = nameFromEmail(email);
+        const initials = initialsFromName(name);
+        const color = colorFromEmail(email);
+        matchedUser = {
+          id: `sso_${Date.now()}`,
+          name,
+          email,
+          color,
+          avatarInitials: initials
+        };
+        allUsers.push(matchedUser);
+        localStorage.setItem("pyrio_users", JSON.stringify(allUsers));
+      }
+      setSSOSession({ email, userId: matchedUser.id, via: "sso", at: Date.now() });
+      setCurrentUser(matchedUser.id);
+      const userTeams = getTeamsForUser(matchedUser.id);
+      const allTeams = getTeams();
+      const target = userTeams[0] || allTeams[0];
+      if (target) setCurrentTeamId(target.id);
+      modal.querySelector("#sso-step-auth").style.display = "none";
+      modal.querySelector("#sso-step-success").style.display = "";
+      setTimeout(() => {
+        root.removeChild(overlay);
+        onLogin();
+      }, 1e3);
+    }, delay);
+  };
+  modal.querySelector("#sso-email-input").onkeydown = (e) => {
+    if (e.key === "Enter") modal.querySelector("#sso-continue-btn").click();
+  };
 }
 
 // src/components/calendar.js
@@ -767,217 +1395,6 @@ function renderWeekView(bodyDiv, currentDate2, selectedDate2, onDateSelect, team
   bodyDiv.appendChild(weekDaysDiv);
 }
 
-// src/components/toast.js
-var stylesInjected = false;
-function injectStyles() {
-  if (stylesInjected) return;
-  stylesInjected = true;
-  const style = document.createElement("style");
-  style.textContent = `
-        .toast-container {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 10000;
-            display: flex;
-            flex-direction: column-reverse;
-            gap: 8px;
-            pointer-events: none;
-        }
-
-        .toast {
-            pointer-events: auto;
-            background: #FFFFFF;
-            border-radius: 12px;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.08);
-            padding: 12px 16px;
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            gap: 10px;
-            max-width: 380px;
-            min-width: 280px;
-            font-family: 'Inter', sans-serif;
-            font-size: 0.85rem;
-            color: var(--text-main, #111827);
-            transform: translateY(20px);
-            opacity: 0;
-            animation: toast-slide-in 0.3s ease forwards;
-        }
-
-        .toast.toast-exit {
-            animation: toast-fade-out 0.25s ease forwards;
-        }
-
-        @keyframes toast-slide-in {
-            from {
-                transform: translateY(20px);
-                opacity: 0;
-            }
-            to {
-                transform: translateY(0);
-                opacity: 1;
-            }
-        }
-
-        @keyframes toast-fade-out {
-            from {
-                transform: translateY(0);
-                opacity: 1;
-            }
-            to {
-                transform: translateY(8px);
-                opacity: 0;
-            }
-        }
-
-        .toast-icon {
-            flex-shrink: 0;
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .toast-icon svg {
-            width: 20px;
-            height: 20px;
-        }
-
-        .toast-body {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .toast-message {
-            line-height: 1.4;
-            word-break: break-word;
-        }
-
-        .toast-undo-btn {
-            background: none;
-            border: none;
-            color: var(--primary, #4F46E5);
-            font-weight: 700;
-            text-decoration: underline;
-            cursor: pointer;
-            font-family: inherit;
-            font-size: 0.85rem;
-            padding: 0;
-            margin-left: 2px;
-            flex-shrink: 0;
-        }
-
-        .toast-undo-btn:hover {
-            opacity: 0.8;
-        }
-
-        .toast-close-btn {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 2px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--text-muted, #6B7280);
-            flex-shrink: 0;
-            border-radius: 4px;
-            transition: background 0.15s;
-        }
-
-        .toast-close-btn:hover {
-            background: var(--bg-body, #F3F4F6);
-        }
-
-        .toast-close-btn svg {
-            width: 16px;
-            height: 16px;
-        }
-    `;
-  document.head.appendChild(style);
-}
-var ICONS = {
-  success: `<svg viewBox="0 0 20 20" fill="none">
-        <circle cx="10" cy="10" r="9" stroke="#10B981" stroke-width="1.5" fill="#ECFDF5"/>
-        <path d="M6.5 10.5L8.5 12.5L13.5 7.5" stroke="#10B981" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`,
-  error: `<svg viewBox="0 0 20 20" fill="none">
-        <circle cx="10" cy="10" r="9" stroke="#EF4444" stroke-width="1.5" fill="#FEF2F2"/>
-        <path d="M7.5 7.5L12.5 12.5M12.5 7.5L7.5 12.5" stroke="#EF4444" stroke-width="1.8" stroke-linecap="round"/>
-    </svg>`,
-  info: `<svg viewBox="0 0 20 20" fill="none">
-        <circle cx="10" cy="10" r="9" stroke="#3B82F6" stroke-width="1.5" fill="#EFF6FF"/>
-        <path d="M10 9V14" stroke="#3B82F6" stroke-width="1.8" stroke-linecap="round"/>
-        <circle cx="10" cy="6.5" r="1" fill="#3B82F6"/>
-    </svg>`,
-  warning: `<svg viewBox="0 0 20 20" fill="none">
-        <path d="M10 2L18.66 17H1.34L10 2Z" stroke="#F59E0B" stroke-width="1.5" fill="#FFFBEB" stroke-linejoin="round"/>
-        <path d="M10 8V12" stroke="#F59E0B" stroke-width="1.8" stroke-linecap="round"/>
-        <circle cx="10" cy="14.5" r="1" fill="#F59E0B"/>
-    </svg>`
-};
-var CLOSE_ICON = `<svg viewBox="0 0 16 16" fill="none">
-    <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-</svg>`;
-var container = null;
-function getContainer() {
-  if (container && document.body.contains(container)) return container;
-  container = document.createElement("div");
-  container.className = "toast-container";
-  document.body.appendChild(container);
-  return container;
-}
-function dismissToast(toastEl) {
-  if (toastEl.dataset.dismissed === "true") return;
-  toastEl.dataset.dismissed = "true";
-  if (toastEl._autoTimer) {
-    clearTimeout(toastEl._autoTimer);
-    toastEl._autoTimer = null;
-  }
-  toastEl.classList.add("toast-exit");
-  toastEl.addEventListener("animationend", () => {
-    toastEl.remove();
-  }, { once: true });
-}
-function showToast(message, type = "info", options = {}) {
-  injectStyles();
-  const { duration = 3e3, undoCallback = null } = options;
-  const host = getContainer();
-  const toast = document.createElement("div");
-  toast.className = "toast";
-  const iconWrap = document.createElement("span");
-  iconWrap.className = "toast-icon";
-  iconWrap.innerHTML = ICONS[type] || ICONS.info;
-  toast.appendChild(iconWrap);
-  const body = document.createElement("span");
-  body.className = "toast-body toast-message";
-  body.innerHTML = escapeHtml(message);
-  toast.appendChild(body);
-  if (typeof undoCallback === "function") {
-    const undoBtn = document.createElement("button");
-    undoBtn.className = "toast-undo-btn";
-    undoBtn.textContent = "Undo";
-    undoBtn.addEventListener("click", () => {
-      undoCallback();
-      dismissToast(toast);
-    });
-    toast.appendChild(undoBtn);
-  }
-  const closeBtn = document.createElement("button");
-  closeBtn.className = "toast-close-btn";
-  closeBtn.innerHTML = CLOSE_ICON;
-  closeBtn.setAttribute("aria-label", "Close");
-  closeBtn.addEventListener("click", () => dismissToast(toast));
-  toast.appendChild(closeBtn);
-  host.appendChild(toast);
-  if (duration > 0) {
-    toast._autoTimer = setTimeout(() => dismissToast(toast), duration);
-  }
-  return toast;
-}
-
 // src/services/notificationService.js
 function notifyAssignment(activityTitle, assigneeId, assignerId) {
   return addNotification({
@@ -1014,11 +1431,15 @@ function openActivityModal(existingActivity = null, options = {}) {
   const team = getTeamById(teamId);
   const members = team?.members || [];
   const categories = team?.categories || [];
+  const workflows = getWorkflows(teamId);
   const currentUser = getCurrentUser();
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   const modal = document.createElement("div");
   modal.className = "modal-content";
+  const workflowOptionsHtml = workflows.map(
+    (wf) => `<option value="${escapeHtml(wf.id)}" ${act.workflowId === wf.id ? "selected" : ""}>${escapeHtml(wf.name)}</option>`
+  ).join("");
   modal.innerHTML = `
         <div class="modal-header">
             <h3>${isEdit ? "Edit Activity" : "New Activity"}</h3>
@@ -1062,12 +1483,27 @@ function openActivityModal(existingActivity = null, options = {}) {
                     </select>
                 </div>
             </div>
-            <div class="form-group">
+
+            <!-- Workflow selector -->
+            ${workflows.length > 0 ? `
+            <div class="form-group workflow-selector-group">
+                <label>Workflow <span class="workflow-selector-hint">(optional \u2014 replaces default status)</span></label>
+                <select id="act-workflow" class="form-input">
+                    <option value="">None (use standard status)</option>
+                    ${workflowOptionsHtml}
+                </select>
+            </div>
+            <div id="workflow-step-preview" class="workflow-step-preview"></div>
+            ` : ""}
+
+            <!-- Standard status (hidden when a workflow is selected) -->
+            <div class="form-group" id="status-group">
                 <label>Status</label>
                 <select id="act-status" class="form-input">
                     ${STATUSES.map((s) => `<option value="${s}" ${act.status === s ? "selected" : ""}>${STATUS_LABELS[s]}</option>`).join("")}
                 </select>
             </div>
+
             <div class="form-group">
                 <label class="recurring-toggle-label">
                     <input type="checkbox" id="act-recurring" ${act.recurring ? "checked" : ""}>
@@ -1114,6 +1550,38 @@ function openActivityModal(existingActivity = null, options = {}) {
   recurringCheckbox.onchange = () => {
     recurrenceOptions.style.display = recurringCheckbox.checked ? "block" : "none";
   };
+  const workflowSelect = modal.querySelector("#act-workflow");
+  const statusGroup = modal.querySelector("#status-group");
+  const stepPreview = modal.querySelector("#workflow-step-preview");
+  function updateWorkflowUI() {
+    if (!workflowSelect) return;
+    const selectedWfId = workflowSelect.value;
+    if (selectedWfId) {
+      statusGroup.style.display = "none";
+      const wf = workflows.find((w) => w.id === selectedWfId);
+      if (wf && stepPreview) {
+        const currentStep = isEdit && act.workflowId === selectedWfId ? act.workflowStepIndex || 0 : 0;
+        stepPreview.innerHTML = `
+                    <div class="wf-preview-label">Current stage:</div>
+                    <div class="wf-preview-steps">
+                        ${(wf.steps || []).map((s, i) => `
+                            <span class="wf-preview-chip ${i === currentStep ? "active" : ""}"
+                                style="${i === currentStep ? `background:${s.color}22;color:${s.color};border:1px solid ${s.color}66` : ""}">
+                                ${escapeHtml(s.name)}
+                            </span>
+                        `).join('<span class="wf-arrow-sm">\u203A</span>')}
+                    </div>
+                `;
+      }
+    } else {
+      statusGroup.style.display = "";
+      if (stepPreview) stepPreview.innerHTML = "";
+    }
+  }
+  if (workflowSelect) {
+    workflowSelect.onchange = updateWorkflowUI;
+    updateWorkflowUI();
+  }
   modal.querySelector(".modal-save-btn").onclick = () => {
     const title = modal.querySelector("#act-title").value.trim();
     if (!title) {
@@ -1122,6 +1590,11 @@ function openActivityModal(existingActivity = null, options = {}) {
       return;
     }
     const isRecurring = modal.querySelector("#act-recurring").checked;
+    const selectedWfId = workflowSelect ? workflowSelect.value : "";
+    let workflowStepIndex = 0;
+    if (isEdit && act.workflowId === selectedWfId && selectedWfId) {
+      workflowStepIndex = act.workflowStepIndex || 0;
+    }
     const data = {
       title,
       description: modal.querySelector("#act-desc").value.trim(),
@@ -1129,14 +1602,16 @@ function openActivityModal(existingActivity = null, options = {}) {
       dueTime: modal.querySelector("#act-time").value,
       assigneeId: modal.querySelector("#act-assignee").value,
       categoryId: modal.querySelector("#act-category").value,
-      status: modal.querySelector("#act-status").value,
+      status: selectedWfId ? "in_progress" : modal.querySelector("#act-status").value,
       teamId,
       recurring: isRecurring,
       recurrenceRule: isRecurring ? {
         frequency: modal.querySelector("#act-rec-frequency").value,
         interval: parseInt(modal.querySelector("#act-rec-interval").value, 10) || 1,
         endDate: modal.querySelector("#act-rec-end").value || null
-      } : null
+      } : null,
+      workflowId: selectedWfId || null,
+      workflowStepIndex
     };
     if (isEdit) {
       updateActivity(act.id, data);
@@ -1618,6 +2093,11 @@ function renderActivityList(container2, selectedDate2, viewMode, onUpdate) {
   categories.forEach((c) => {
     catMap[c.id] = c;
   });
+  const workflows = getWorkflows(teamId);
+  const workflowMap = {};
+  workflows.forEach((wf) => {
+    workflowMap[wf.id] = wf;
+  });
   const team = getTeamById(teamId);
   const teamMembers = (team?.members || []).map((m) => {
     const user = getUserById(m.userId);
@@ -1720,22 +2200,63 @@ function renderActivityList(container2, selectedDate2, viewMode, onUpdate) {
           trackedBadge.textContent = escapeHtml(trackedLabel);
           meta.appendChild(trackedBadge);
         }
-        const statusPill = document.createElement("button");
-        statusPill.className = "status-pill-btn";
-        statusPill.style.backgroundColor = STATUS_COLORS[act.status] + "20";
-        statusPill.style.color = STATUS_COLORS[act.status];
-        statusPill.textContent = STATUS_LABELS[act.status];
-        statusPill.onclick = () => {
-          const idx = STATUSES.indexOf(act.status);
-          const newStatus = STATUSES[(idx + 1) % STATUSES.length];
-          updateActivity(act.id, { status: newStatus });
-          showToast("Status updated", "info");
-          if (act.assigneeId) {
-            notifyStatusChange(act.title, act.assigneeId, STATUS_LABELS[newStatus]);
-          }
-          onUpdate();
-        };
-        meta.appendChild(statusPill);
+        if (act.workflowId && workflowMap[act.workflowId]) {
+          const wf = workflowMap[act.workflowId];
+          const stepIdx = act.workflowStepIndex ?? 0;
+          const step = wf.steps[stepIdx];
+          const isLastStep = stepIdx === wf.steps.length - 1;
+          const wfPill = document.createElement("button");
+          wfPill.className = "status-pill-btn wf-step-pill";
+          wfPill.style.backgroundColor = (step?.color || "#6B7280") + "22";
+          wfPill.style.color = step?.color || "#6B7280";
+          wfPill.style.borderColor = (step?.color || "#6B7280") + "55";
+          wfPill.title = `Workflow: ${wf.name} \u2014 click to advance`;
+          wfPill.innerHTML = `
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                        ${escapeHtml(step?.name || "Unknown")}
+                    `;
+          wfPill.onclick = () => {
+            const nextIdx = stepIdx + 1;
+            if (nextIdx >= wf.steps.length) {
+              updateActivity(act.id, { status: "done" });
+              showToast(`\u2713 Completed all stages of "${wf.name}"`, "success");
+            } else {
+              updateActivity(act.id, { workflowStepIndex: nextIdx });
+              showToast(`Moved to: ${wf.steps[nextIdx].name}`, "info");
+            }
+            onUpdate();
+          };
+          meta.appendChild(wfPill);
+          const dots = document.createElement("span");
+          dots.className = "wf-progress-dots";
+          wf.steps.forEach((s, i) => {
+            const dot = document.createElement("span");
+            dot.className = `wf-dot ${i < stepIdx ? "done" : i === stepIdx ? "active" : ""}`;
+            dot.style.setProperty("--dot-color", s.color || "#6B7280");
+            dot.title = s.name;
+            dots.appendChild(dot);
+          });
+          meta.appendChild(dots);
+        } else {
+          const statusPill = document.createElement("button");
+          statusPill.className = "status-pill-btn";
+          statusPill.style.backgroundColor = STATUS_COLORS[act.status] + "20";
+          statusPill.style.color = STATUS_COLORS[act.status];
+          statusPill.textContent = STATUS_LABELS[act.status];
+          statusPill.onclick = () => {
+            const idx = STATUSES.indexOf(act.status);
+            const newStatus = STATUSES[(idx + 1) % STATUSES.length];
+            updateActivity(act.id, { status: newStatus });
+            showToast("Status updated", "info");
+            if (act.assigneeId) {
+              notifyStatusChange(act.title, act.assigneeId, STATUS_LABELS[newStatus]);
+            }
+            onUpdate();
+          };
+          meta.appendChild(statusPill);
+        }
         if (act.recurring) {
           const recurBadge = document.createElement("span");
           recurBadge.className = "recurring-badge";
@@ -2428,7 +2949,8 @@ function renderTeamSelector(headerEl, onTeamChange) {
     teams.forEach((t) => {
       const opt = document.createElement("option");
       opt.value = t.id;
-      opt.textContent = t.name;
+      const hasWorkflows = (t.workflows || []).length > 0;
+      opt.textContent = hasWorkflows ? `\u26A1 ${t.name}` : t.name;
       opt.selected = t.id === currentTeamId;
       selector.appendChild(opt);
     });
@@ -3666,6 +4188,384 @@ function showDataManagerModal(onUpdate) {
   root.appendChild(overlay);
 }
 
+// src/components/workflowManager.js
+function renderWorkflowManager(container2, onUpdate) {
+  const teamId = getCurrentTeamId();
+  const isAdmin = isTeamAdmin(teamId);
+  const section = document.createElement("div");
+  section.className = "card workflow-manager-section";
+  const header = document.createElement("div");
+  header.className = "section-header";
+  header.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+        </svg>
+        Custom Workflows
+    `;
+  if (isAdmin) {
+    const addBtn = document.createElement("button");
+    addBtn.className = "btn btn-sm btn-primary add-task-btn";
+    addBtn.textContent = "+ New Workflow";
+    addBtn.onclick = () => openWorkflowEditModal(teamId, null, () => {
+      renderList();
+      onUpdate();
+    });
+    header.appendChild(addBtn);
+  }
+  const listEl = document.createElement("div");
+  listEl.className = "workflow-list";
+  function renderList() {
+    listEl.innerHTML = "";
+    const workflows = getWorkflows(teamId);
+    if (workflows.length === 0) {
+      listEl.innerHTML = '<div class="empty-state">No workflows yet.' + (isAdmin ? " Click <strong>+ New Workflow</strong> to create one." : "") + "</div>";
+      return;
+    }
+    workflows.forEach((wf) => {
+      const card = document.createElement("div");
+      card.className = "workflow-card";
+      const stepsHtml = (wf.steps || []).map((s, i) => `
+                <span class="wf-step-chip" style="background:${escapeHtml(s.color || "#6B7280")}22;color:${escapeHtml(s.color || "#6B7280")};border:1px solid ${escapeHtml(s.color || "#6B7280")}44">
+                    <span class="wf-step-num">${i + 1}</span>${escapeHtml(s.name)}
+                </span>
+            `).join('<span class="wf-arrow">\u2192</span>');
+      card.innerHTML = `
+                <div class="workflow-card-header">
+                    <div>
+                        <span class="workflow-name">${escapeHtml(wf.name)}</span>
+                        ${wf.description ? `<span class="workflow-desc">${escapeHtml(wf.description)}</span>` : ""}
+                    </div>
+                    ${isAdmin ? `<div class="workflow-card-actions">
+                        <button class="btn btn-sm btn-secondary wf-edit-btn">Edit</button>
+                        <button class="btn btn-sm btn-danger wf-del-btn">Delete</button>
+                    </div>` : ""}
+                </div>
+                <div class="wf-steps-row">${stepsHtml || '<span class="text-muted">No steps defined</span>'}</div>
+            `;
+      if (isAdmin) {
+        card.querySelector(".wf-edit-btn").onclick = () => openWorkflowEditModal(teamId, wf, () => {
+          renderList();
+          onUpdate();
+        });
+        card.querySelector(".wf-del-btn").onclick = () => showConfirmModal(
+          "Delete Workflow",
+          `Delete workflow "${wf.name}"? Activities using it will keep their current step but lose workflow tracking.`,
+          () => {
+            deleteWorkflow(teamId, wf.id);
+            showToast("Workflow deleted", "success");
+            renderList();
+            onUpdate();
+          }
+        );
+      }
+      listEl.appendChild(card);
+    });
+  }
+  renderList();
+  section.appendChild(header);
+  section.appendChild(listEl);
+  container2.appendChild(section);
+}
+var STEP_COLORS = [
+  "#6B7280",
+  "#3B82F6",
+  "#8B5CF6",
+  "#EC4899",
+  "#F59E0B",
+  "#10B981",
+  "#EF4444",
+  "#0D9488"
+];
+function openWorkflowEditModal(teamId, existingWf, onSave) {
+  const root = document.getElementById("modal-root");
+  if (!root) return;
+  const isEdit = !!existingWf;
+  let steps = existingWf ? JSON.parse(JSON.stringify(existingWf.steps || [])) : [
+    { name: "To Do", color: "#6B7280" },
+    { name: "In Progress", color: "#3B82F6" },
+    { name: "Done", color: "#10B981" }
+  ];
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "modal-content workflow-edit-modal";
+  function buildModal() {
+    modal.innerHTML = `
+            <div class="modal-header">
+                <h3>${isEdit ? "Edit Workflow" : "New Workflow"}</h3>
+                <button class="modal-close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Workflow Name <span class="required">*</span></label>
+                    <input type="text" id="wf-name" class="form-input" placeholder="e.g. Bug Fix Process" value="${escapeHtml(existingWf?.name || "")}">
+                </div>
+                <div class="form-group">
+                    <label>Description</label>
+                    <input type="text" id="wf-desc" class="form-input" placeholder="Optional description" value="${escapeHtml(existingWf?.description || "")}">
+                </div>
+
+                <div class="wf-steps-label">
+                    <label>Stages</label>
+                    <button class="btn btn-sm btn-secondary" id="wf-add-step">+ Add Stage</button>
+                </div>
+                <div id="wf-steps-list" class="wf-steps-edit-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary modal-cancel-btn">Cancel</button>
+                <button class="btn btn-primary modal-save-btn">${isEdit ? "Save Changes" : "Create Workflow"}</button>
+            </div>
+        `;
+    renderStepsList();
+    bindModalEvents();
+  }
+  function renderStepsList() {
+    const list = modal.querySelector("#wf-steps-list");
+    list.innerHTML = "";
+    steps.forEach((step, idx) => {
+      const row = document.createElement("div");
+      row.className = "wf-step-edit-row";
+      row.dataset.idx = idx;
+      row.innerHTML = `
+                <span class="wf-step-drag-handle">\u283F</span>
+                <input type="text" class="form-input wf-step-name" value="${escapeHtml(step.name)}" placeholder="Stage name">
+                <div class="wf-color-picker">
+                    ${STEP_COLORS.map((c) => `
+                        <button class="wf-color-swatch ${step.color === c ? "active" : ""}"
+                            style="background:${c}" data-color="${c}" title="${c}"></button>
+                    `).join("")}
+                </div>
+                <div class="wf-step-edit-actions">
+                    ${idx > 0 ? '<button class="btn btn-sm btn-secondary wf-step-up" title="Move up">\u2191</button>' : '<span style="width:28px"></span>'}
+                    ${idx < steps.length - 1 ? '<button class="btn btn-sm btn-secondary wf-step-down" title="Move down">\u2193</button>' : '<span style="width:28px"></span>'}
+                    ${steps.length > 1 ? '<button class="btn btn-sm btn-danger wf-step-del">\xD7</button>' : '<span style="width:28px"></span>'}
+                </div>
+            `;
+      row.querySelector(".wf-step-name").oninput = (e) => {
+        steps[idx].name = e.target.value;
+      };
+      row.querySelectorAll(".wf-color-swatch").forEach((btn) => {
+        btn.onclick = () => {
+          steps[idx].color = btn.dataset.color;
+          renderStepsList();
+        };
+      });
+      row.querySelector(".wf-step-up")?.addEventListener("click", () => {
+        [steps[idx - 1], steps[idx]] = [steps[idx], steps[idx - 1]];
+        renderStepsList();
+      });
+      row.querySelector(".wf-step-down")?.addEventListener("click", () => {
+        [steps[idx], steps[idx + 1]] = [steps[idx + 1], steps[idx]];
+        renderStepsList();
+      });
+      row.querySelector(".wf-step-del")?.addEventListener("click", () => {
+        steps.splice(idx, 1);
+        renderStepsList();
+      });
+      list.appendChild(row);
+    });
+  }
+  function bindModalEvents() {
+    const close = () => root.removeChild(overlay);
+    overlay.onclick = (e) => {
+      if (e.target === overlay) close();
+    };
+    modal.querySelector(".modal-close-btn").onclick = close;
+    modal.querySelector(".modal-cancel-btn").onclick = close;
+    modal.querySelector("#wf-add-step").onclick = () => {
+      modal.querySelectorAll(".wf-step-name").forEach((inp, i) => {
+        steps[i].name = inp.value;
+      });
+      steps.push({ name: "New Stage", color: STEP_COLORS[steps.length % STEP_COLORS.length] });
+      renderStepsList();
+    };
+    modal.querySelector(".modal-save-btn").onclick = () => {
+      modal.querySelectorAll(".wf-step-name").forEach((inp, i) => {
+        if (steps[i]) steps[i].name = inp.value.trim();
+      });
+      const name = modal.querySelector("#wf-name").value.trim();
+      if (!name) {
+        modal.querySelector("#wf-name").classList.add("input-error");
+        showToast("Workflow name is required", "error");
+        return;
+      }
+      if (steps.length === 0) {
+        showToast("Add at least one stage", "error");
+        return;
+      }
+      if (steps.some((s) => !s.name)) {
+        showToast("All stages must have a name", "error");
+        return;
+      }
+      const description = modal.querySelector("#wf-desc").value.trim();
+      if (isEdit) {
+        updateWorkflow(teamId, existingWf.id, { name, description, steps });
+        showToast("Workflow updated", "success");
+      } else {
+        addWorkflow(teamId, { name, description, steps });
+        showToast("Workflow created", "success");
+      }
+      close();
+      onSave();
+    };
+  }
+  buildModal();
+  overlay.appendChild(modal);
+  root.appendChild(overlay);
+}
+
+// src/components/integrationSettings.js
+function renderIntegrationSettings(container2, onUpdate) {
+  const teamId = getCurrentTeamId();
+  if (!isTeamAdmin(teamId)) return;
+  const cfg = getSSOConfig();
+  const section = document.createElement("div");
+  section.className = "card integration-settings-section";
+  const header = document.createElement("div");
+  header.className = "section-header";
+  header.innerHTML = `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        HR Platform Integration
+        <span class="integration-status-dot ${cfg.enabled ? "active" : ""}"></span>
+        <span class="integration-status-text">${cfg.enabled ? "Enabled" : "Disabled"}</span>
+    `;
+  const body = document.createElement("div");
+  body.className = "integration-body";
+  body.innerHTML = `
+        <!-- Enable toggle -->
+        <div class="integration-toggle-row">
+            <div class="integration-toggle-info">
+                <span class="integration-toggle-title">Single Sign-On (SSO)</span>
+                <span class="integration-toggle-desc">Allow employees to sign in with their HR platform credentials. SSO users get Calendar access only.</span>
+            </div>
+            <label class="toggle-switch">
+                <input type="checkbox" id="sso-enabled" ${cfg.enabled ? "checked" : ""}>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+
+        <div class="integration-divider"></div>
+
+        <!-- Config fields -->
+        <div class="integration-fields" id="sso-fields" style="${!cfg.enabled ? "opacity:0.5;pointer-events:none" : ""}">
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Platform Name</label>
+                    <input type="text" id="sso-platform-name" class="form-input" value="${escapeHtml(cfg.platformName)}" placeholder="e.g. Workday, SAP SuccessFactors">
+                </div>
+                <div class="form-group">
+                    <label>Client / App ID</label>
+                    <input type="text" id="sso-client-id" class="form-input" value="${escapeHtml(cfg.clientId)}" placeholder="e.g. pyrio-app-001">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>SSO Endpoint URL</label>
+                <input type="url" id="sso-url" class="form-input" value="${escapeHtml(cfg.ssoUrl)}" placeholder="https://hr.company.com/sso/auth">
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Allowed Email Domain <span class="field-hint">(optional)</span></label>
+                    <div class="input-prefix-wrap">
+                        <span class="input-prefix">@</span>
+                        <input type="text" id="sso-domain" class="form-input input-with-prefix" value="${escapeHtml(cfg.allowedDomain)}" placeholder="company.com">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Button Colour</label>
+                    <div class="color-input-row">
+                        <input type="color" id="sso-color" class="color-picker-input" value="${escapeHtml(cfg.buttonColor)}">
+                        <input type="text" id="sso-color-text" class="form-input" value="${escapeHtml(cfg.buttonColor)}" maxlength="7" style="flex:1">
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Button Label</label>
+                <input type="text" id="sso-btn-label" class="form-input" value="${escapeHtml(cfg.buttonLabel)}" placeholder="Sign in with HR Platform">
+            </div>
+
+            <div class="form-group">
+                <label>Description <span class="field-hint">(shown on login page)</span></label>
+                <input type="text" id="sso-description" class="form-input" value="${escapeHtml(cfg.description)}" placeholder="Short description for employees">
+            </div>
+
+            <!-- Live preview -->
+            <div class="sso-preview-box">
+                <div class="sso-preview-label">Login Button Preview</div>
+                <button class="sso-preview-btn" id="sso-preview-btn" style="background:${escapeHtml(cfg.buttonColor)}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                    ${escapeHtml(cfg.buttonLabel)}
+                </button>
+                <span class="sso-preview-note">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                    SSO users can only access <strong>Calendar</strong>
+                </span>
+            </div>
+        </div>
+
+        <!-- Save -->
+        <div class="integration-footer">
+            <button class="btn btn-primary" id="sso-save-btn">Save Configuration</button>
+        </div>
+    `;
+  section.appendChild(header);
+  section.appendChild(body);
+  container2.appendChild(section);
+  const enabledCb = section.querySelector("#sso-enabled");
+  const fieldsDiv = section.querySelector("#sso-fields");
+  const colorPick = section.querySelector("#sso-color");
+  const colorText = section.querySelector("#sso-color-text");
+  const previewBtn = section.querySelector("#sso-preview-btn");
+  const labelInput = section.querySelector("#sso-btn-label");
+  enabledCb.onchange = () => {
+    fieldsDiv.style.opacity = enabledCb.checked ? "1" : "0.5";
+    fieldsDiv.style.pointerEvents = enabledCb.checked ? "" : "none";
+  };
+  colorPick.oninput = () => {
+    colorText.value = colorPick.value;
+    previewBtn.style.background = colorPick.value;
+  };
+  colorText.oninput = () => {
+    if (/^#[0-9A-Fa-f]{6}$/.test(colorText.value)) {
+      colorPick.value = colorText.value;
+      previewBtn.style.background = colorText.value;
+    }
+  };
+  labelInput.oninput = () => {
+    previewBtn.querySelector("svg").outerHTML;
+    previewBtn.childNodes[previewBtn.childNodes.length - 1].textContent = " " + labelInput.value;
+  };
+  section.querySelector("#sso-save-btn").onclick = () => {
+    const newCfg = {
+      enabled: enabledCb.checked,
+      platformName: section.querySelector("#sso-platform-name").value.trim() || "HR Platform",
+      clientId: section.querySelector("#sso-client-id").value.trim(),
+      ssoUrl: section.querySelector("#sso-url").value.trim(),
+      allowedDomain: section.querySelector("#sso-domain").value.trim().replace(/^@/, ""),
+      buttonColor: colorPick.value,
+      buttonLabel: section.querySelector("#sso-btn-label").value.trim() || "Sign in with HR Platform",
+      description: section.querySelector("#sso-description").value.trim(),
+      calendarOnly: true
+    };
+    setSSOConfig(newCfg);
+    showToast(
+      newCfg.enabled ? "\u2713 SSO enabled \u2014 login page updated" : "SSO disabled",
+      newCfg.enabled ? "success" : "info"
+    );
+    onUpdate();
+  };
+}
+
 // src/services/recurrenceService.js
 function generateNextOccurrence(activity) {
   if (!activity.recurring || !activity.recurrenceRule) return null;
@@ -3766,17 +4666,31 @@ function renderApp() {
   createTeamBtn.textContent = "+ Team";
   createTeamBtn.onclick = () => showCreateTeamModal(() => renderApp());
   headerLeft.appendChild(createTeamBtn);
+  const teamId = getCurrentTeamId();
+  const userIsAdmin = teamId ? isTeamAdmin(teamId) : false;
+  const ssoUser = isSSOSession();
+  if (ssoUser && activeTab !== "calendar") {
+    activeTab = "calendar";
+  }
+  const adminOnlyTabs = ["team", "analytics", "workload", "productivity"];
+  if (!userIsAdmin && !ssoUser && adminOnlyTabs.includes(activeTab)) {
+    activeTab = "dashboard";
+  }
   const nav = document.createElement("nav");
   nav.className = "app-nav";
-  const tabs = [
-    { id: "dashboard", label: "Dashboard" },
-    { id: "calendar", label: "Calendar" },
-    { id: "team", label: "Team" },
-    { id: "analytics", label: "Analytics" },
-    { id: "workload", label: "Workload" },
-    { id: "productivity", label: "Productivity" }
+  const allTabs = [
+    { id: "dashboard", label: "Dashboard", adminOnly: false, ssoHidden: true },
+    { id: "calendar", label: "Calendar", adminOnly: false, ssoHidden: false },
+    { id: "team", label: "Team", adminOnly: true, ssoHidden: true },
+    { id: "analytics", label: "Analytics", adminOnly: true, ssoHidden: true },
+    { id: "workload", label: "Workload", adminOnly: true, ssoHidden: true },
+    { id: "productivity", label: "Productivity", adminOnly: true, ssoHidden: true }
   ];
-  tabs.forEach((t) => {
+  const visibleTabs = allTabs.filter((t) => {
+    if (ssoUser) return !t.ssoHidden;
+    return !t.adminOnly || userIsAdmin;
+  });
+  visibleTabs.forEach((t) => {
     const btn = document.createElement("button");
     btn.className = `nav-tab ${activeTab === t.id ? "active" : ""}`;
     btn.textContent = t.label;
@@ -3789,7 +4703,19 @@ function renderApp() {
   headerLeft.appendChild(nav);
   const headerRight = document.createElement("div");
   headerRight.className = "header-right";
-  headerRight.innerHTML = `
+  if (ssoUser) {
+    const ssoBadge = document.createElement("div");
+    ssoBadge.className = "sso-session-badge";
+    ssoBadge.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            SSO
+        `;
+    ssoBadge.title = "Signed in via HR Platform SSO (Calendar access only)";
+    headerRight.appendChild(ssoBadge);
+  }
+  headerRight.innerHTML += `
         <div class="header-user">
             <span class="header-avatar" style="background-color:${user.color}">${escapeHtml(user.avatarInitials)}</span>
             <span class="header-username">${escapeHtml(user.name)}</span>
@@ -3815,6 +4741,7 @@ function renderApp() {
   logoutBtn.className = "btn btn-sm btn-secondary logout-btn";
   logoutBtn.textContent = "Logout";
   logoutBtn.onclick = () => {
+    clearSSOSession();
     logout();
     renderApp();
   };
@@ -3824,8 +4751,8 @@ function renderApp() {
   app.appendChild(header);
   const main = document.createElement("main");
   main.className = "app-main";
-  const teamId = getCurrentTeamId();
-  if (!teamId) {
+  const currentTeamId = getCurrentTeamId();
+  if (!currentTeamId) {
     main.innerHTML = '<div class="empty-state" style="padding:4rem">No team selected. Create or join a team to get started.</div>';
     app.appendChild(main);
     return;
@@ -3878,6 +4805,8 @@ function renderTeamView(main) {
   const rightCol = document.createElement("div");
   rightCol.className = "grid-right";
   renderTeamManager(leftCol, () => renderApp());
+  renderWorkflowManager(leftCol, () => renderApp());
+  renderIntegrationSettings(leftCol, () => renderApp());
   renderActivityList(rightCol, selectedDate, "team", () => renderApp());
   renderTimeline(rightCol, selectedDate, "team", () => renderApp());
   grid.appendChild(leftCol);

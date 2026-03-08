@@ -18,6 +18,9 @@ import { renderNotificationBell } from './components/notifications.js';
 import { openActivityModal } from './components/activityModal.js';
 import { initKeyboardShortcuts } from './services/keyboardShortcuts.js';
 import { showDataManagerModal } from './components/dataManager.js';
+import { renderWorkflowManager } from './components/workflowManager.js';
+import { openSettingsModal } from './components/settingsModal.js';
+import { isSSOSession, clearSSOSession } from './services/ssoService.js';
 import { processRecurringActivities } from './services/recurrenceService.js';
 
 let currentDate = new Date();
@@ -100,18 +103,37 @@ function renderApp() {
     createTeamBtn.onclick = () => showCreateTeamModal(() => renderApp());
     headerLeft.appendChild(createTeamBtn);
 
-    // Nav tabs
+    // Nav tabs — members: Dashboard + Calendar; admins: all; SSO users: Calendar only
+    const teamId = getCurrentTeamId();
+    const userIsAdmin = teamId ? isTeamAdmin(teamId) : false;
+    const ssoUser = isSSOSession();
+
+    // SSO users are locked to Calendar regardless of role
+    if (ssoUser && activeTab !== 'calendar') {
+        activeTab = 'calendar';
+    }
+
+    // Non-admin non-SSO users: redirect away from admin-only tabs
+    const adminOnlyTabs = ['team', 'analytics', 'workload', 'productivity'];
+    if (!userIsAdmin && !ssoUser && adminOnlyTabs.includes(activeTab)) {
+        activeTab = 'dashboard';
+    }
+
     const nav = document.createElement('nav');
     nav.className = 'app-nav';
-    const tabs = [
-        { id: 'dashboard', label: 'Dashboard' },
-        { id: 'calendar', label: 'Calendar' },
-        { id: 'team', label: 'Team' },
-        { id: 'analytics', label: 'Analytics' },
-        { id: 'workload', label: 'Workload' },
-        { id: 'productivity', label: 'Productivity' },
+    const allTabs = [
+        { id: 'dashboard', label: 'Dashboard', adminOnly: false, ssoHidden: true },
+        { id: 'calendar', label: 'Calendar', adminOnly: false, ssoHidden: false },
+        { id: 'team', label: 'Team', adminOnly: true, ssoHidden: true },
+        { id: 'analytics', label: 'Analytics', adminOnly: true, ssoHidden: true },
+        { id: 'workload', label: 'Workload', adminOnly: true, ssoHidden: true },
+        { id: 'productivity', label: 'Productivity', adminOnly: true, ssoHidden: true },
     ];
-    tabs.forEach(t => {
+    const visibleTabs = allTabs.filter(t => {
+        if (ssoUser) return !t.ssoHidden;
+        return !t.adminOnly || userIsAdmin;
+    });
+    visibleTabs.forEach(t => {
         const btn = document.createElement('button');
         btn.className = `nav-tab ${activeTab === t.id ? 'active' : ''}`;
         btn.textContent = t.label;
@@ -122,7 +144,22 @@ function renderApp() {
 
     const headerRight = document.createElement('div');
     headerRight.className = 'header-right';
-    headerRight.innerHTML = `
+
+    // SSO badge (shown when logged in via HR SSO)
+    if (ssoUser) {
+        const ssoBadge = document.createElement('div');
+        ssoBadge.className = 'sso-session-badge';
+        ssoBadge.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            SSO
+        `;
+        ssoBadge.title = 'Signed in via HR Platform SSO (Calendar access only)';
+        headerRight.appendChild(ssoBadge);
+    }
+
+    headerRight.innerHTML += `
         <div class="header-user">
             <span class="header-avatar" style="background-color:${user.color}">${escapeHtml(user.avatarInitials)}</span>
             <span class="header-username">${escapeHtml(user.name)}</span>
@@ -131,6 +168,21 @@ function renderApp() {
 
     renderNotificationBell(headerRight, user.id);
     renderThemeToggle(headerRight);
+
+    // Settings button (admin only — gear icon)
+    if (userIsAdmin) {
+        const settingsBtn = document.createElement('button');
+        settingsBtn.className = 'btn btn-sm btn-secondary header-settings-btn';
+        settingsBtn.title = 'Settings';
+        settingsBtn.innerHTML = `
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+        `;
+        settingsBtn.onclick = () => openSettingsModal(() => renderApp());
+        headerRight.appendChild(settingsBtn);
+    }
 
     // Data import/export button
     const dataBtn = document.createElement('button');
@@ -142,8 +194,9 @@ function renderApp() {
     dataBtn.style.cursor = 'pointer';
     dataBtn.title = 'Import / Export data';
     dataBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"></circle>
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
     </svg>`;
     dataBtn.onclick = () => showDataManagerModal(() => renderApp());
     headerRight.appendChild(dataBtn);
@@ -151,7 +204,7 @@ function renderApp() {
     const logoutBtn = document.createElement('button');
     logoutBtn.className = 'btn btn-sm btn-secondary logout-btn';
     logoutBtn.textContent = 'Logout';
-    logoutBtn.onclick = () => { logout(); renderApp(); };
+    logoutBtn.onclick = () => { clearSSOSession(); logout(); renderApp(); };
     headerRight.appendChild(logoutBtn);
 
     header.appendChild(headerLeft);
@@ -162,8 +215,8 @@ function renderApp() {
     const main = document.createElement('main');
     main.className = 'app-main';
 
-    const teamId = getCurrentTeamId();
-    if (!teamId) {
+    const currentTeamId = getCurrentTeamId();
+    if (!currentTeamId) {
         main.innerHTML = '<div class="empty-state" style="padding:4rem">No team selected. Create or join a team to get started.</div>';
         app.appendChild(main);
         return;
@@ -228,6 +281,7 @@ function renderTeamView(main) {
     rightCol.className = 'grid-right';
 
     renderTeamManager(leftCol, () => renderApp());
+    renderWorkflowManager(leftCol, () => renderApp());
     renderActivityList(rightCol, selectedDate, 'team', () => renderApp());
     renderTimeline(rightCol, selectedDate, 'team', () => renderApp());
 

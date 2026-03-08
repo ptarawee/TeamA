@@ -1,5 +1,8 @@
-import { getActivitiesByDate, getActivitiesByTeam, deleteActivity, updateActivity,
-    getUserById, getCategories, getCurrentTeamId, getTimeEntriesByActivity, getTeamById } from '../data/store.js';
+import {
+    getActivitiesByDate, getActivitiesByTeam, deleteActivity, updateActivity,
+    getUserById, getCategories, getCurrentTeamId, getTimeEntriesByActivity,
+    getTeamById, getWorkflows
+} from '../data/store.js';
 import { escapeHtml } from '../utils/sanitize.js';
 import { formatTime12h, formatDisplayDate, formatDate } from '../utils/date.js';
 import { STATUS_LABELS, STATUS_COLORS, STATUSES } from '../data/schema.js';
@@ -42,6 +45,11 @@ export function renderActivityList(container, selectedDate, viewMode, onUpdate) 
     const categories = getCategories(teamId);
     const catMap = {};
     categories.forEach(c => { catMap[c.id] = c; });
+
+    // Build workflow map for quick lookup
+    const workflows = getWorkflows(teamId);
+    const workflowMap = {};
+    workflows.forEach(wf => { workflowMap[wf.id] = wf; });
 
     // Get team members for assignee filter
     const team = getTeamById(teamId);
@@ -174,23 +182,69 @@ export function renderActivityList(container, selectedDate, viewMode, onUpdate) 
                     meta.appendChild(trackedBadge);
                 }
 
-                // Status pill
-                const statusPill = document.createElement('button');
-                statusPill.className = 'status-pill-btn';
-                statusPill.style.backgroundColor = STATUS_COLORS[act.status] + '20';
-                statusPill.style.color = STATUS_COLORS[act.status];
-                statusPill.textContent = STATUS_LABELS[act.status];
-                statusPill.onclick = () => {
-                    const idx = STATUSES.indexOf(act.status);
-                    const newStatus = STATUSES[(idx + 1) % STATUSES.length];
-                    updateActivity(act.id, { status: newStatus });
-                    showToast('Status updated', 'info');
-                    if (act.assigneeId) {
-                        notifyStatusChange(act.title, act.assigneeId, STATUS_LABELS[newStatus]);
-                    }
-                    onUpdate();
-                };
-                meta.appendChild(statusPill);
+                // Status / Workflow step pill
+                if (act.workflowId && workflowMap[act.workflowId]) {
+                    const wf = workflowMap[act.workflowId];
+                    const stepIdx = act.workflowStepIndex ?? 0;
+                    const step = wf.steps[stepIdx];
+                    const isLastStep = stepIdx === wf.steps.length - 1;
+
+                    const wfPill = document.createElement('button');
+                    wfPill.className = 'status-pill-btn wf-step-pill';
+                    wfPill.style.backgroundColor = (step?.color || '#6B7280') + '22';
+                    wfPill.style.color = step?.color || '#6B7280';
+                    wfPill.style.borderColor = (step?.color || '#6B7280') + '55';
+                    wfPill.title = `Workflow: ${wf.name} — click to advance`;
+                    wfPill.innerHTML = `
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                        ${escapeHtml(step?.name || 'Unknown')}
+                    `;
+                    wfPill.onclick = () => {
+                        const nextIdx = stepIdx + 1;
+                        if (nextIdx >= wf.steps.length) {
+                            // Already at last step — mark done
+                            updateActivity(act.id, { status: 'done' });
+                            showToast(`✓ Completed all stages of "${wf.name}"`, 'success');
+                        } else {
+                            updateActivity(act.id, { workflowStepIndex: nextIdx });
+                            showToast(`Moved to: ${wf.steps[nextIdx].name}`, 'info');
+                        }
+                        onUpdate();
+                    };
+                    meta.appendChild(wfPill);
+
+                    // Small workflow progress dots
+                    const dots = document.createElement('span');
+                    dots.className = 'wf-progress-dots';
+                    wf.steps.forEach((s, i) => {
+                        const dot = document.createElement('span');
+                        dot.className = `wf-dot ${i < stepIdx ? 'done' : i === stepIdx ? 'active' : ''}`;
+                        dot.style.setProperty('--dot-color', s.color || '#6B7280');
+                        dot.title = s.name;
+                        dots.appendChild(dot);
+                    });
+                    meta.appendChild(dots);
+                } else {
+                    // Standard status cycling
+                    const statusPill = document.createElement('button');
+                    statusPill.className = 'status-pill-btn';
+                    statusPill.style.backgroundColor = STATUS_COLORS[act.status] + '20';
+                    statusPill.style.color = STATUS_COLORS[act.status];
+                    statusPill.textContent = STATUS_LABELS[act.status];
+                    statusPill.onclick = () => {
+                        const idx = STATUSES.indexOf(act.status);
+                        const newStatus = STATUSES[(idx + 1) % STATUSES.length];
+                        updateActivity(act.id, { status: newStatus });
+                        showToast('Status updated', 'info');
+                        if (act.assigneeId) {
+                            notifyStatusChange(act.title, act.assigneeId, STATUS_LABELS[newStatus]);
+                        }
+                        onUpdate();
+                    };
+                    meta.appendChild(statusPill);
+                }
 
                 // Recurring badge
                 if (act.recurring) {
