@@ -1,11 +1,12 @@
 {
   "name": "pyrio",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "AI-Powered Task & Schedule Coordination",
+  "main": "src/main.js",
   "scripts": {
-    "start": "node index.js",
-    "build": "esbuild index.js --bundle --outfile=dist/bundle.js"
+    "build": "esbuild src/main.js --bundle --outfile=dist/bundle.js --format=esm",
+    "watch": "esbuild src/main.js --bundle --outfile=dist/bundle.js --format=esm --watch",
+    "serve": "esbuild src/main.js --bundle --outfile=dist/bundle.js --format=esm --servedir=."
   },
   "keywords": [],
   "author": "",
